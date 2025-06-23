@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Cursor Usage Event Counter & Auto Rows (v0.12 - Ultra Robust)
+// @name         Cursor Usage Event Counter & Auto Rows (v0.13 - All Models)
 // @namespace    http://tampermonkey.net/
-// @version      0.12
-// @description  Counts successful & errored events, sets rows to 500 on Cursor's usage page, and shows notifications.
+// @version      0.13
+// @description  Counts successful & errored events for all models, sets rows to 500 on Cursor's usage page, and shows notifications.
 // @author       Fahad
 // @match        https://www.cursor.com/dashboard?tab=usage
 // @match        *://*/*dashboard*tab=usage*
@@ -13,17 +13,16 @@
 (function() {
     'use strict';
 
-    console.log('[Usage Counter] Script starting (v0.12 - Ultra Robust)...');
+    console.log('[Usage Counter] Script starting (v0.13 - All Models)...');
 
-    const MODEL_TEXT_TO_COUNT = "claude-3.7-sonnet";
     const ERRORED_KIND_TEXT = "Errored, Not Charged";
     const DISPLAY_ELEMENT_ID = 'userscript-usage-counter';
     const NOTIFICATION_ELEMENT_ID = 'userscript-row-notification';
     const TARGET_ROWS_PER_PAGE_VALUE = "500";
     let rowsPerPageSetAttempted = false;
 
-    function createOrUpdateDisplay(successfulCount, erroredCount) {
-        console.log('[Usage Counter] createOrUpdateDisplay called with successful:', successfulCount, 'errored:', erroredCount);
+    function createOrUpdateDisplay(modelCounts) {
+        console.log('[Usage Counter] createOrUpdateDisplay called with modelCounts:', modelCounts);
         let display = document.getElementById(DISPLAY_ELEMENT_ID);
         if (!document.body) { // Guard against body not being ready
             console.error("[Usage Counter] Document body not found in createOrUpdateDisplay. Aborting display update.");
@@ -33,7 +32,6 @@
             console.log('[Usage Counter] Creating display element.');
             display = document.createElement('div');
             display.id = DISPLAY_ELEMENT_ID;
-            // ... (styling remains the same)
             display.style.position = 'fixed';
             display.style.top = '120px';
             display.style.right = '20px';
@@ -46,6 +44,8 @@
             display.style.fontSize = '14px';
             display.style.fontFamily = 'Arial, sans-serif';
             display.style.lineHeight = '1.6';
+            display.style.maxHeight = '70vh';
+            display.style.overflowY = 'auto';
             try {
                 document.body.appendChild(display);
                 console.log('[Usage Counter] Display element appended to body.');
@@ -54,8 +54,40 @@
                 return null;
             }
         }
-        const totalCount = successfulCount + erroredCount;
-        display.innerHTML = `Model: ${MODEL_TEXT_TO_COUNT}<br>Successful: ${successfulCount}<br>Errored: ${erroredCount}<br>Total: ${totalCount}`;
+
+        let htmlContent = '<h3 style="margin-top:0;margin-bottom:10px;border-bottom:1px solid #555;padding-bottom:5px;">Usage Counts</h3>';
+        
+        // Calculate totals
+        let totalSuccessful = 0;
+        let totalErrored = 0;
+        
+        // Sort models alphabetically
+        const sortedModels = Object.keys(modelCounts).sort();
+        
+        sortedModels.forEach(model => {
+            const counts = modelCounts[model];
+            totalSuccessful += counts.successful;
+            totalErrored += counts.errored;
+            const modelTotal = counts.successful + counts.errored;
+            
+            htmlContent += `<div style="margin-bottom:8px;padding-bottom:5px;border-bottom:1px dotted #444;">
+                <strong>${model}</strong><br>
+                <span style="color:#7fff7f">Successful: ${counts.successful}</span><br>
+                <span style="color:#ff7f7f">Errored: ${counts.errored}</span><br>
+                <span>Total: ${modelTotal}</span>
+            </div>`;
+        });
+        
+        // Add overall totals at the bottom
+        const overallTotal = totalSuccessful + totalErrored;
+        htmlContent += `<div style="margin-top:10px;padding-top:5px;border-top:2px solid #555;">
+            <strong>OVERALL TOTALS</strong><br>
+            <span style="color:#7fff7f">Successful: ${totalSuccessful}</span><br>
+            <span style="color:#ff7f7f">Errored: ${totalErrored}</span><br>
+            <span>Total: ${overallTotal}</span>
+        </div>`;
+        
+        display.innerHTML = htmlContent;
         return display;
     }
 
@@ -140,10 +172,14 @@
                 }
             }
             
-            // Look for model name on the page
+            // Look for model-related text on the page
             const textNodes = document.querySelectorAll('body *');
             for (const node of textNodes) {
-                if (node.textContent && node.textContent.includes(MODEL_TEXT_TO_COUNT)) {
+                if (node.textContent && (
+                    node.textContent.includes("claude") || 
+                    node.textContent.includes("gpt") ||
+                    node.textContent.includes("llama") ||
+                    node.textContent.includes("gemini"))) {
                     console.log('[Usage Counter] isLikelyUsagePage: true (found model name in page content).');
                     return true;
                 }
@@ -209,108 +245,142 @@
     }
 
     function performCount() {
-        console.log('[Usage Counter] Performing actual event count (differentiated v0.11 - Ultra Robust).');
-        let successfulModelEvents = 0;
-        let erroredModelEvents = 0;
+        console.log('[Usage Counter] Performing actual event count (All Models v0.13).');
+        // Initialize an object to store counts for each model
+        let modelCounts = {};
 
         try {
-            const allPossibleElements = document.querySelectorAll('body *');
-            if (!allPossibleElements || allPossibleElements.length === 0) {
-                console.warn("[Usage Counter] No elements found under body * for model cell search.");
-                createOrUpdateDisplay(0, 0); // Show 0 if no elements
-                return;
-            }
-
-            const modelCells = Array.from(allPossibleElements)
-                .filter(el => el && el.children && typeof el.children.length === 'number' && el.children.length === 0 &&
-                               el.textContent && el.textContent.trim() === MODEL_TEXT_TO_COUNT);
-
-            console.log(`[Usage Counter] Found ${modelCells.length} potential model cells with text "${MODEL_TEXT_TO_COUNT}".`);
-
-            modelCells.forEach((modelCell, index) => {
-                console.log(`[Usage Counter] Processing model cell ${index + 1}:`, modelCell ? modelCell.outerHTML.substring(0, 100) + "..." : "NULL modelCell");
-                if (!modelCell) {
-                    console.error(`[Usage Counter] Row ${index + 1}: modelCell is unexpectedly null or undefined. Skipping.`);
-                    return;
-                }
-
-                let kindText = "";
-
-                // Attempt 1: Sibling Navigation
-                try {
-                    const maxModeCell = modelCell.previousElementSibling;
-                    if (maxModeCell) {
-                        const potentialKindCell = maxModeCell.previousElementSibling;
-                        if (potentialKindCell) {
-                            if (potentialKindCell.textContent) {
-                                kindText = potentialKindCell.textContent.trim();
-                                console.log(`[Usage Counter] Row ${index + 1} (Sibling Nav): Found Kind cell. Text: "${kindText}"`);
-                            } else {
-                                console.log(`[Usage Counter] Row ${index + 1} (Sibling Nav): Kind cell found (sibling) but textContent is empty/null.`);
-                            }
-                        } else {
-                            console.log(`[Usage Counter] Row ${index + 1} (Sibling Nav): MaxMode cell found, but its previous sibling (expected Kind) is null.`);
-                        }
-                    } else {
-                        console.log(`[Usage Counter] Row ${index + 1} (Sibling Nav): Model cell's previous sibling (expected MaxMode) is null.`);
-                    }
-                } catch (e) {
-                    console.error(`[Usage Counter] Row ${index + 1} (Sibling Nav): Error during sibling navigation:`, e, modelCell.outerHTML);
-                    kindText = ""; // Ensure reset
-                }
-
-                // Attempt 2 (Fallback): Parent-Child Index
-                if (!kindText) {
-                    console.log(`[Usage Counter] Row ${index + 1}: Sibling navigation for Kind failed or yielded no text. Trying parent-child index fallback.`);
+            // Find all table rows or elements that might contain usage data
+            const tableRows = document.querySelectorAll('tr, div[role="row"]');
+            console.log(`[Usage Counter] Found ${tableRows.length} potential table rows.`);
+            
+            if (tableRows.length === 0) {
+                // Try a more generic approach to find potential model cells
+                const allPossibleElements = document.querySelectorAll('body *');
+                const potentialModelCells = Array.from(allPossibleElements).filter(el => {
+                    if (!el || !el.textContent) return false;
+                    const text = el.textContent.trim();
+                    // Pattern matching for common model names
+                    return (
+                        text.includes("claude") || 
+                        text.includes("gpt") || 
+                        text.includes("llama") ||
+                        text.includes("gemini") ||
+                        text.includes("mistral") ||
+                        text.includes("anthropic")
+                    );
+                });
+                
+                console.log(`[Usage Counter] No table rows found. Found ${potentialModelCells.length} potential model cells via text content search.`);
+                
+                // Process each potential model cell
+                potentialModelCells.forEach((modelCell, index) => {
                     try {
-                        const parentCell = modelCell.parentElement; // Assumed <td> or cell div
-                        if (parentCell) {
-                            const rowElement = parentCell.parentElement; // Assumed <tr> or row div
-                            if (rowElement && rowElement.children && typeof rowElement.children.length === 'number' && rowElement.children.length > 2) {
-                                const potentialKindCellByParent = rowElement.children[2]; // Kind is index 2
-                                if (potentialKindCellByParent) {
-                                    if (potentialKindCellByParent.textContent) {
-                                        kindText = potentialKindCellByParent.textContent.trim();
-                                        console.log(`[Usage Counter] Row ${index + 1} (Parent-Child Index): Found Kind cell. Text: "${kindText}"`);
-                                    } else {
-                                        console.log(`[Usage Counter] Row ${index + 1} (Parent-Child Index): Kind cell (children[2]) found but textContent is empty/null.`);
-                                    }
-                                } else {
-                                    console.log(`[Usage Counter] Row ${index + 1} (Parent-Child Index): Kind cell (children[2]) is null.`);
+                        if (!modelCell.textContent) return;
+                        
+                        const modelName = modelCell.textContent.trim();
+                        let kindText = "";
+                        
+                        // Look for kind information in parent elements or siblings
+                        const parentElement = modelCell.parentElement;
+                        if (parentElement) {
+                            const allCellsInRow = parentElement.querySelectorAll('*');
+                            for (const cell of allCellsInRow) {
+                                if (cell.textContent && cell.textContent.trim() === ERRORED_KIND_TEXT) {
+                                    kindText = ERRORED_KIND_TEXT;
+                                    break;
                                 }
-                            } else {
-                                console.log(`[Usage Counter] Row ${index + 1} (Parent-Child Index): rowElement or its children not suitable. Row:`, rowElement ? rowElement.outerHTML.substring(0,100) : "NULL rowElement");
                             }
+                        }
+                        
+                        // Initialize model entry if not exists
+                        if (!modelCounts[modelName]) {
+                            modelCounts[modelName] = { successful: 0, errored: 0 };
+                        }
+                        
+                        // Count based on kind
+                        if (kindText === ERRORED_KIND_TEXT) {
+                            modelCounts[modelName].errored++;
                         } else {
-                            console.log(`[Usage Counter] Row ${index + 1} (Parent-Child Index): modelCell.parentElement is null.`);
+                            modelCounts[modelName].successful++;
                         }
                     } catch (e) {
-                        console.error(`[Usage Counter] Row ${index + 1} (Parent-Child Index): Error during parent-child navigation:`, e, modelCell.outerHTML);
-                        kindText = ""; // Ensure reset
+                        console.error(`[Usage Counter] Error processing potential model cell ${index}:`, e);
                     }
-                }
-
-                if (kindText) {
-                    if (kindText === ERRORED_KIND_TEXT) {
-                        erroredModelEvents++;
-                    } else {
-                        successfulModelEvents++;
+                });
+            } else {
+                // Process each table row
+                tableRows.forEach((row, index) => {
+                    try {
+                        // Skip header rows (they usually have th elements)
+                        if (row.querySelector('th')) {
+                            return;
+                        }
+                        
+                        // Get all cells in the row
+                        const cells = row.querySelectorAll('td, div[role="cell"]');
+                        if (!cells || cells.length < 3) return;
+                        
+                        let modelName = "";
+                        let kindText = "";
+                        
+                        // Try to identify model and kind cells
+                        // In most tables: Date | Kind | Model | ...
+                        for (let i = 0; i < cells.length; i++) {
+                            const cell = cells[i];
+                            if (!cell || !cell.textContent) continue;
+                            
+                            const cellText = cell.textContent.trim();
+                            
+                            // Look for model name patterns
+                            if (cellText.includes("claude") || 
+                                cellText.includes("gpt") || 
+                                cellText.includes("llama") || 
+                                cellText.includes("gemini") ||
+                                cellText.includes("mistral")) {
+                                modelName = cellText;
+                            }
+                            
+                            // Check if this is a kind cell with error status
+                            if (cellText === ERRORED_KIND_TEXT) {
+                                kindText = ERRORED_KIND_TEXT;
+                            }
+                        }
+                        
+                        if (modelName) {
+                            // Initialize model entry if not exists
+                            if (!modelCounts[modelName]) {
+                                modelCounts[modelName] = { successful: 0, errored: 0 };
+                            }
+                            
+                            // Count based on kind
+                            if (kindText === ERRORED_KIND_TEXT) {
+                                modelCounts[modelName].errored++;
+                            } else {
+                                modelCounts[modelName].successful++;
+                            }
+                        }
+                    } catch (e) {
+                        console.error(`[Usage Counter] Error processing table row ${index}:`, e);
                     }
-                } else {
-                    successfulModelEvents++;
-                    console.warn(`[Usage Counter] Row ${index + 1}: Could NOT determine Kind text. Counting as successful by default. Model:`, modelCell.outerHTML.substring(0,100));
-                }
-            });
+                });
+            }
         } catch (e) {
             console.error("[Usage Counter] CRITICAL ERROR in performCount's main try block:", e);
             // In case of a major error, try to display something to indicate script ran but failed counting
-            createOrUpdateDisplay(-1, -1); // Indicate error in counts
+            createOrUpdateDisplay({ "ERROR": { successful: -1, errored: -1 } });
             return; // Stop further processing in performCount
         }
-
-        console.log('[Usage Counter] Final Differentiated counts - Successful:', successfulModelEvents, 'Errored:', erroredModelEvents);
+        
+        // If no models were found, show error message
+        if (Object.keys(modelCounts).length === 0) {
+            modelCounts["No Models Found"] = { successful: 0, errored: 0 };
+        }
+        
+        console.log('[Usage Counter] Final model counts:', modelCounts);
+        
         try {
-            const display = createOrUpdateDisplay(successfulModelEvents, erroredModelEvents);
+            const display = createOrUpdateDisplay(modelCounts);
             if (display) {
                 display.style.display = 'block';
             } else {
@@ -342,7 +412,7 @@
                             performCount(); 
                         } catch(e) { 
                             console.error("Error in performCount from timeout:", e); 
-                            createOrUpdateDisplay(-1,-1); 
+                            createOrUpdateDisplay({ "ERROR": { successful: -1, errored: -1 } });
                         }
                     }, success ? 500 : 0);
                 }).catch(err => {
@@ -352,7 +422,7 @@
                         performCount(); 
                     } catch(e) { 
                         console.error("Error in performCount from catch:", e); 
-                        createOrUpdateDisplay(-1,-1); 
+                        createOrUpdateDisplay({ "ERROR": { successful: -1, errored: -1 } });
                     }
                 });
             } else {
@@ -360,13 +430,13 @@
                     performCount(); 
                 } catch(e) { 
                     console.error("Error in performCount (direct call):", e); 
-                    createOrUpdateDisplay(-1,-1); 
+                    createOrUpdateDisplay({ "ERROR": { successful: -1, errored: -1 } });
                 }
             }
         } catch (e) {
             console.error("[Usage Counter] CRITICAL ERROR in countEvents function:", e);
             try { 
-                createOrUpdateDisplay(-1, -1); 
+                createOrUpdateDisplay({ "ERROR": { successful: -1, errored: -1 } }); 
             } catch (e2) { 
                 console.error("Error trying to show error display:", e2); 
             }
@@ -389,5 +459,5 @@
         console.error("[Usage Counter] CRITICAL ERROR setting up initial timers:", e);
     }
 
-    console.log('[Usage Counter] Script loaded and initial timers set (v0.12 - Ultra Robust).');
+    console.log('[Usage Counter] Script loaded and initial timers set (v0.13 - All Models).');
 })();
