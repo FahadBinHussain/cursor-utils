@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Cursor Usage Event Counter & Auto Rows (v0.14 - All Models with Pagination)
+// @name         Cursor Usage Event Counter & Auto Rows (v0.16 - All Models with Single Pagination)
 // @namespace    http://tampermonkey.net/
-// @version      0.14
+// @version      0.16
 // @description  Counts successful & errored events for all models across all pages, sets rows to 500, and shows notifications.
 // @author       Fahad
 // @match        https://www.cursor.com/dashboard?tab=usage
@@ -13,7 +13,7 @@
 (function() {
     'use strict';
 
-    console.log('[Usage Counter] Script starting (v0.14 - All Models with Pagination)...');
+    console.log('[Usage Counter] Script starting (v0.16 - All Models with Single Pagination)...');
 
     const ERRORED_KIND_TEXT = "Errored, Not Charged";
     const DISPLAY_ELEMENT_ID = 'userscript-usage-counter';
@@ -26,6 +26,7 @@
     let currentPage = 1;
     let totalPages = 1;
     let paginationInProgress = false;
+    let paginationCompleted = false;
     let lastNavigationTime = 0;
     const PAGINATION_COOLDOWN = 2000; // 2 seconds between page navigations to avoid rate limiting
     const PAGINATION_STATUS_ID = 'userscript-pagination-status';
@@ -413,7 +414,7 @@
     }
 
     function performCount(isPageNavigation = false) {
-        console.log('[Usage Counter] Performing actual event count (All Models v0.14).');
+        console.log('[Usage Counter] Performing actual event count (All Models v0.16).');
         // Initialize an object to store counts for each model
         let modelCounts = {};
 
@@ -565,8 +566,20 @@
                         }, 1500);
                     } else {
                         paginationInProgress = false;
+                        paginationCompleted = true;
                         hidePaginationStatus();
                         showTemporaryNotification("Pagination complete!");
+                        
+                        // Final display update with complete data
+                        try {
+                            const paginationInfo = `Data from all ${totalPages} pages`;
+                            const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
+                            if (display) {
+                                display.style.display = 'block';
+                            }
+                        } catch (e) {
+                            console.error("[Usage Counter] Error updating final display after pagination:", e);
+                        }
                     }
                 }, PAGINATION_COOLDOWN);
                 
@@ -584,16 +597,28 @@
             } else {
                 // Pagination is complete
                 paginationInProgress = false;
+                paginationCompleted = true;
                 hidePaginationStatus();
                 showTemporaryNotification("Pagination complete!");
+                
+                // Final display update with complete data
+                try {
+                    const paginationInfo = `Data from all ${totalPages} pages`;
+                    const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
+                    if (display) {
+                        display.style.display = 'block';
+                    }
+                } catch (e) {
+                    console.error("[Usage Counter] Error updating final display after pagination:", e);
+                }
             }
         } else {
             // Fresh count, not from pagination
             globalModelCounts = modelCounts;
             
             // Check for pagination
-            if (detectPagination() && totalPages > 1 && !paginationInProgress) {
-                console.log(`[Usage Counter] Starting pagination process for ${totalPages} pages`);
+            if (detectPagination() && totalPages > 1 && !paginationInProgress && !paginationCompleted) {
+                console.log(`[Usage Counter] Starting one-time pagination process for ${totalPages} pages`);
                 paginationInProgress = true;
                 showPaginationStatus(`Starting pagination scan (page 1 of ${totalPages})...`, true);
                 
@@ -607,30 +632,47 @@
                             }, 1500);
                         } else {
                             paginationInProgress = false;
+                            paginationCompleted = true;
                             hidePaginationStatus();
+                            
+                            // Final display update for single page
+                            try {
+                                const paginationInfo = `Data from page ${currentPage}`;
+                                const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
+                                if (display) {
+                                    display.style.display = 'block';
+                                }
+                            } catch (e) {
+                                console.error("[Usage Counter] Error updating display after single page:", e);
+                            }
                         }
                     }, 500);
                 }
-            }
-        }
-        
-        // Always update the display with the current state
-        try {
-            let paginationInfo = null;
-            if (totalPages > 1) {
-                paginationInfo = paginationInProgress 
-                    ? `Scanning pages... (${currentPage} of ${totalPages})` 
-                    : `Showing data from all ${totalPages} pages`;
-            }
-            
-            const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
-            if (display) {
-                display.style.display = 'block';
+            } else if (paginationCompleted) {
+                // If pagination already completed, just show data without updating
+                try {
+                    const paginationInfo = `Data from all ${totalPages} pages`;
+                    const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
+                    if (display) {
+                        display.style.display = 'block';
+                    }
+                } catch (e) {
+                    console.error("[Usage Counter] Error showing existing data:", e);
+                }
             } else {
-                console.error("[Usage Counter] createOrUpdateDisplay returned null after counts. Display not shown.");
+                // No pagination needed, just update display with current page data
+                try {
+                    const paginationInfo = totalPages > 1 ? `Data from page ${currentPage}` : null;
+                    const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
+                    if (display) {
+                        display.style.display = 'block';
+                    } else {
+                        console.error("[Usage Counter] createOrUpdateDisplay returned null after counts. Display not shown.");
+                    }
+                } catch (e) {
+                    console.error("[Usage Counter] Error calling createOrUpdateDisplay or setting display to block (after counts):", e);
+                }
             }
-        } catch (e) {
-            console.error("[Usage Counter] Error calling createOrUpdateDisplay or setting display to block (after counts):", e);
         }
     }
 
@@ -650,6 +692,12 @@
             // Don't start a new count if pagination is in progress
             if (paginationInProgress) {
                 console.log('[Usage Counter] Pagination in progress, skipping new count.');
+                return;
+            }
+            
+            // Don't restart if pagination is already completed
+            if (paginationCompleted) {
+                console.log('[Usage Counter] Pagination already completed, skipping new count.');
                 return;
             }
             
@@ -701,13 +749,19 @@
             countEvents();
         }, 2000); // Slightly longer initial delay
 
+        // Much less frequent interval just to keep the display updated if needed
         setInterval(() => {
-            console.log('[Usage Counter] Interval countEvents triggered.');
-            countEvents();
-        }, 10000); // Longer interval to accommodate pagination
+            // Only update the display if we're on the usage page
+            if (isLikelyUsagePage()) {
+                const display = document.getElementById(DISPLAY_ELEMENT_ID);
+                if (display) {
+                    display.style.display = 'block';
+                }
+            }
+        }, 30000); // Check every 30 seconds if display should be visible
     } catch (e) {
         console.error("[Usage Counter] CRITICAL ERROR setting up initial timers:", e);
     }
 
-    console.log('[Usage Counter] Script loaded and initial timers set (v0.14 - All Models with Pagination).');
+    console.log('[Usage Counter] Script loaded and initial timers set (v0.16 - All Models with Single Pagination).');
 })();
