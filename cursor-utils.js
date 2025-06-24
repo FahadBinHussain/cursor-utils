@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Cursor Usage Event Counter & Auto Rows (v0.13 - All Models)
+// @name         Cursor Usage Event Counter & Auto Rows (v0.14 - All Models with Pagination)
 // @namespace    http://tampermonkey.net/
-// @version      0.13
-// @description  Counts successful & errored events for all models, sets rows to 500 on Cursor's usage page, and shows notifications.
+// @version      0.14
+// @description  Counts successful & errored events for all models across all pages, sets rows to 500, and shows notifications.
 // @author       Fahad
 // @match        https://www.cursor.com/dashboard?tab=usage
 // @match        *://*/*dashboard*tab=usage*
@@ -13,15 +13,24 @@
 (function() {
     'use strict';
 
-    console.log('[Usage Counter] Script starting (v0.13 - All Models)...');
+    console.log('[Usage Counter] Script starting (v0.14 - All Models with Pagination)...');
 
     const ERRORED_KIND_TEXT = "Errored, Not Charged";
     const DISPLAY_ELEMENT_ID = 'userscript-usage-counter';
     const NOTIFICATION_ELEMENT_ID = 'userscript-row-notification';
     const TARGET_ROWS_PER_PAGE_VALUE = "500";
     let rowsPerPageSetAttempted = false;
+    
+    // Pagination state variables
+    let globalModelCounts = {};
+    let currentPage = 1;
+    let totalPages = 1;
+    let paginationInProgress = false;
+    let lastNavigationTime = 0;
+    const PAGINATION_COOLDOWN = 2000; // 2 seconds between page navigations to avoid rate limiting
+    const PAGINATION_STATUS_ID = 'userscript-pagination-status';
 
-    function createOrUpdateDisplay(modelCounts) {
+    function createOrUpdateDisplay(modelCounts, paginationInfo) {
         console.log('[Usage Counter] createOrUpdateDisplay called with modelCounts:', modelCounts);
         let display = document.getElementById(DISPLAY_ELEMENT_ID);
         if (!document.body) { // Guard against body not being ready
@@ -56,6 +65,13 @@
         }
 
         let htmlContent = '<h3 style="margin-top:0;margin-bottom:10px;border-bottom:1px solid #555;padding-bottom:5px;">Usage Counts</h3>';
+        
+        // Add pagination info if available
+        if (paginationInfo) {
+            htmlContent += `<div style="margin-bottom:10px;font-size:12px;color:#aaa;">
+                ${paginationInfo}
+            </div>`;
+        }
         
         // Calculate totals
         let totalSuccessful = 0;
@@ -134,6 +150,54 @@
         }, 3000);
         
         console.log('[Usage Counter] Notification shown:', message);
+    }
+
+    function showPaginationStatus(message, isProcessing = false) {
+        if (!document.body) {
+            console.error("[Usage Counter] Document body not found in showPaginationStatus. Aborting.");
+            return;
+        }
+        
+        let statusElement = document.getElementById(PAGINATION_STATUS_ID);
+        if (!statusElement) {
+            statusElement = document.createElement('div');
+            statusElement.id = PAGINATION_STATUS_ID;
+            statusElement.style.position = 'fixed';
+            statusElement.style.top = '95px';
+            statusElement.style.right = '20px';
+            statusElement.style.padding = '5px 10px';
+            statusElement.style.backgroundColor = 'rgba(0, 123, 255, 0.9)';
+            statusElement.style.color = 'white';
+            statusElement.style.border = '1px solid #0056b3';
+            statusElement.style.borderRadius = '5px';
+            statusElement.style.zIndex = '10003';
+            statusElement.style.fontSize = '12px';
+            statusElement.style.fontFamily = 'Arial, sans-serif';
+            document.body.appendChild(statusElement);
+        }
+
+        if (isProcessing) {
+            statusElement.innerHTML = `${message} <span class="spinner" style="display:inline-block;width:10px;height:10px;border:2px solid #fff;border-radius:50%;border-top-color:transparent;animation:spin 1s linear infinite;"></span>`;
+            statusElement.style.display = 'block';
+            
+            // Add the animation if it doesn't exist
+            if (!document.getElementById('pagination-spinner-style')) {
+                const style = document.createElement('style');
+                style.id = 'pagination-spinner-style';
+                style.textContent = `@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`;
+                document.head.appendChild(style);
+            }
+        } else {
+            statusElement.textContent = message;
+            statusElement.style.display = 'block';
+        }
+    }
+
+    function hidePaginationStatus() {
+        const statusElement = document.getElementById(PAGINATION_STATUS_ID);
+        if (statusElement) {
+            statusElement.style.display = 'none';
+        }
     }
 
     function isLikelyUsagePage() {
@@ -244,8 +308,112 @@
         }
     }
 
-    function performCount() {
-        console.log('[Usage Counter] Performing actual event count (All Models v0.13).');
+    function detectPagination() {
+        try {
+            console.log('[Usage Counter] Detecting pagination information.');
+            
+            // Reset current page if needed
+            currentPage = 1;
+            totalPages = 1;
+            
+            // Look for page indicator text (e.g., "Page 1 of 2")
+            const pageIndicators = Array.from(document.querySelectorAll('*')).filter(el => 
+                el.textContent && /Page\s+\d+\s+of\s+\d+/i.test(el.textContent.trim())
+            );
+            
+            if (pageIndicators.length > 0) {
+                const pageText = pageIndicators[0].textContent.trim();
+                const match = pageText.match(/Page\s+(\d+)\s+of\s+(\d+)/i);
+                
+                if (match && match.length >= 3) {
+                    currentPage = parseInt(match[1], 10);
+                    totalPages = parseInt(match[2], 10);
+                    console.log(`[Usage Counter] Pagination detected: Page ${currentPage} of ${totalPages}`);
+                    return true;
+                }
+            }
+            
+            // If no page indicator text, check for navigation buttons
+            const nextPageButton = document.querySelector('button svg.lucide-chevron-right, svg.lucide.lucide-chevron-right');
+            if (nextPageButton) {
+                console.log('[Usage Counter] Next page button found, indicating multiple pages.');
+                // If there's a next button but no indicator text, assume at least 2 pages
+                totalPages = Math.max(2, totalPages);
+                return true;
+            }
+            
+            console.log('[Usage Counter] No pagination detected, assuming single page.');
+            return false;
+        } catch (e) {
+            console.error("[Usage Counter] Error detecting pagination:", e);
+            return false;
+        }
+    }
+
+    function navigateToNextPage() {
+        try {
+            console.log(`[Usage Counter] Attempting to navigate from page ${currentPage} to next page...`);
+            
+            // Prevent navigation if cooling down
+            const now = Date.now();
+            if (now - lastNavigationTime < PAGINATION_COOLDOWN) {
+                console.log('[Usage Counter] Navigation on cooldown. Waiting...');
+                return false;
+            }
+            
+            // Check if we're already on the last page
+            if (currentPage >= totalPages) {
+                console.log('[Usage Counter] Already on the last page. No navigation needed.');
+                return false;
+            }
+            
+            // Find and click the next page button
+            const nextPageButton = document.querySelector('button svg.lucide-chevron-right, svg.lucide.lucide-chevron-right');
+            if (!nextPageButton) {
+                console.error('[Usage Counter] Next page button not found.');
+                return false;
+            }
+            
+            // Get the actual button element (may be parent of the SVG)
+            const buttonElement = nextPageButton.closest('button') || nextPageButton.parentElement;
+            if (!buttonElement || buttonElement.disabled) {
+                console.error('[Usage Counter] Next page button is disabled or not found.');
+                return false;
+            }
+            
+            // Click the button
+            buttonElement.click();
+            lastNavigationTime = now;
+            currentPage++;
+            
+            console.log(`[Usage Counter] Navigated to page ${currentPage} of ${totalPages}`);
+            showPaginationStatus(`Navigating to page ${currentPage}...`, true);
+            
+            return true;
+        } catch (e) {
+            console.error("[Usage Counter] Error navigating to next page:", e);
+            return false;
+        }
+    }
+
+    function mergeCounts(existingCounts, newCounts) {
+        const mergedCounts = {...existingCounts};
+        
+        // Add all models from newCounts
+        for (const model in newCounts) {
+            if (!mergedCounts[model]) {
+                mergedCounts[model] = { successful: 0, errored: 0 };
+            }
+            
+            mergedCounts[model].successful += newCounts[model].successful;
+            mergedCounts[model].errored += newCounts[model].errored;
+        }
+        
+        return mergedCounts;
+    }
+
+    function performCount(isPageNavigation = false) {
+        console.log('[Usage Counter] Performing actual event count (All Models v0.14).');
         // Initialize an object to store counts for each model
         let modelCounts = {};
 
@@ -377,10 +545,85 @@
             modelCounts["No Models Found"] = { successful: 0, errored: 0 };
         }
         
-        console.log('[Usage Counter] Final model counts:', modelCounts);
+        console.log('[Usage Counter] Page model counts:', modelCounts);
         
+        // If this is coming from a page navigation during pagination, merge with global counts
+        if (isPageNavigation) {
+            globalModelCounts = mergeCounts(globalModelCounts, modelCounts);
+            
+            // Handle pagination progress
+            const paginationInfo = `Scanned ${currentPage} of ${totalPages} pages`;
+            console.log(`[Usage Counter] ${paginationInfo}`);
+            
+            if (currentPage < totalPages) {
+                // Continue to next page after a short delay
+                setTimeout(() => {
+                    if (navigateToNextPage()) {
+                        // Wait for page to load before counting the next page
+                        setTimeout(() => {
+                            performCount(true);
+                        }, 1500);
+                    } else {
+                        paginationInProgress = false;
+                        hidePaginationStatus();
+                        showTemporaryNotification("Pagination complete!");
+                    }
+                }, PAGINATION_COOLDOWN);
+                
+                // Update display with current progress
+                try {
+                    const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
+                    if (display) {
+                        display.style.display = 'block';
+                    }
+                } catch (e) {
+                    console.error("[Usage Counter] Error updating display during pagination:", e);
+                }
+                
+                return;
+            } else {
+                // Pagination is complete
+                paginationInProgress = false;
+                hidePaginationStatus();
+                showTemporaryNotification("Pagination complete!");
+            }
+        } else {
+            // Fresh count, not from pagination
+            globalModelCounts = modelCounts;
+            
+            // Check for pagination
+            if (detectPagination() && totalPages > 1 && !paginationInProgress) {
+                console.log(`[Usage Counter] Starting pagination process for ${totalPages} pages`);
+                paginationInProgress = true;
+                showPaginationStatus(`Starting pagination scan (page 1 of ${totalPages})...`, true);
+                
+                // If we're already on page 1, start navigating to page 2
+                if (currentPage === 1) {
+                    setTimeout(() => {
+                        if (navigateToNextPage()) {
+                            // Wait for page to load before counting
+                            setTimeout(() => {
+                                performCount(true);
+                            }, 1500);
+                        } else {
+                            paginationInProgress = false;
+                            hidePaginationStatus();
+                        }
+                    }, 500);
+                }
+            }
+        }
+        
+        // Always update the display with the current state
         try {
-            const display = createOrUpdateDisplay(modelCounts);
+            let paginationInfo = null;
+            if (totalPages > 1) {
+                paginationInfo = paginationInProgress 
+                    ? `Scanning pages... (${currentPage} of ${totalPages})` 
+                    : `Showing data from all ${totalPages} pages`;
+            }
+            
+            const display = createOrUpdateDisplay(globalModelCounts, paginationInfo);
             if (display) {
                 display.style.display = 'block';
             } else {
@@ -400,6 +643,13 @@
                 if (display) {
                     display.style.display = 'none';
                 }
+                hidePaginationStatus();
+                return;
+            }
+            
+            // Don't start a new count if pagination is in progress
+            if (paginationInProgress) {
+                console.log('[Usage Counter] Pagination in progress, skipping new count.');
                 return;
             }
             
@@ -454,10 +704,10 @@
         setInterval(() => {
             console.log('[Usage Counter] Interval countEvents triggered.');
             countEvents();
-        }, 6000); // Slightly longer interval
+        }, 10000); // Longer interval to accommodate pagination
     } catch (e) {
         console.error("[Usage Counter] CRITICAL ERROR setting up initial timers:", e);
     }
 
-    console.log('[Usage Counter] Script loaded and initial timers set (v0.13 - All Models).');
+    console.log('[Usage Counter] Script loaded and initial timers set (v0.14 - All Models with Pagination).');
 })();
