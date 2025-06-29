@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Cursor Usage Event Counter & Auto Rows (v0.16 - All Models with Single Pagination)
+// @name         Cursor Usage Event Counter & Auto Rows (v0.17 - All Models with 30d Selection)
 // @namespace    http://tampermonkey.net/
-// @version      0.16
-// @description  Counts successful & errored events for all models across all pages, sets rows to 500, and shows notifications.
+// @version      0.17
+// @description  Selects 30d view, counts successful & errored events across all pages, sets rows to 500.
 // @author       Fahad
 // @match        https://www.cursor.com/dashboard?tab=usage
 // @match        *://*/*dashboard*tab=usage*
@@ -13,13 +13,14 @@
 (function() {
     'use strict';
 
-    console.log('[Usage Counter] Script starting (v0.16 - All Models with Single Pagination)...');
+    console.log('[Usage Counter] Script starting (v0.17 - All Models with 30d Selection)...');
 
     const ERRORED_KIND_TEXT = "Errored, Not Charged";
     const DISPLAY_ELEMENT_ID = 'userscript-usage-counter';
     const NOTIFICATION_ELEMENT_ID = 'userscript-row-notification';
     const TARGET_ROWS_PER_PAGE_VALUE = "500";
     let rowsPerPageSetAttempted = false;
+    let timeRangeSetAttempted = false;
     
     // Pagination state variables
     let globalModelCounts = {};
@@ -257,6 +258,79 @@
         return false;
     }
 
+    function select30DayTimeRange() {
+        try {
+            console.log('[Usage Counter] Attempting to select 30d time range...');
+            
+            // Find the 30d button using the provided selector
+            const buttonSelector = 'button.rounded.px-3.py-2.text-sm.bg-brand-dashboard-card.text-white, button:contains("30d")';
+            let timeRangeButton = null;
+            
+            // Try different methods to find the button
+            const possibleButtons = document.querySelectorAll('button');
+            for (const button of possibleButtons) {
+                if (button.textContent && button.textContent.trim() === '30d') {
+                    timeRangeButton = button;
+                    console.log('[Usage Counter] Found 30d button by text content');
+                    break;
+                }
+                
+                if (button.classList.contains('rounded') && 
+                    button.classList.contains('px-3') && 
+                    button.classList.contains('py-2') && 
+                    button.classList.contains('text-sm') && 
+                    button.classList.contains('bg-brand-dashboard-card') && 
+                    button.classList.contains('text-white')) {
+                    
+                    if (button.textContent && button.textContent.trim() === '30d') {
+                        timeRangeButton = button;
+                        console.log('[Usage Counter] Found 30d button by class and text');
+                        break;
+                    }
+                }
+            }
+            
+            if (!timeRangeButton) {
+                // Try a more generic approach
+                const allButtons = Array.from(document.querySelectorAll('button')).filter(btn => 
+                    btn.textContent && btn.textContent.trim() === '30d'
+                );
+                
+                if (allButtons.length > 0) {
+                    timeRangeButton = allButtons[0];
+                    console.log('[Usage Counter] Found 30d button using generic approach');
+                }
+            }
+            
+            if (!timeRangeButton) {
+                console.log('[Usage Counter] 30d button not found.');
+                return Promise.resolve(false);
+            }
+            
+            // Check if the button is already selected (might have different styling)
+            const isAlreadySelected = timeRangeButton.classList.contains('bg-brand-primary') || 
+                                     timeRangeButton.classList.contains('bg-blue-500') ||
+                                     timeRangeButton.getAttribute('aria-selected') === 'true';
+            
+            if (isAlreadySelected) {
+                console.log('[Usage Counter] 30d time range already selected.');
+                showTemporaryNotification('30d time range already selected');
+                return Promise.resolve(true);
+            }
+            
+            // Click the button
+            timeRangeButton.click();
+            showTemporaryNotification('Selected 30d time range');
+            console.log('[Usage Counter] Clicked 30d button.');
+            
+            // Return a promise that resolves after a delay to allow the UI to update
+            return new Promise(resolve => setTimeout(() => resolve(true), 1000));
+        } catch (e) {
+            console.error("[Usage Counter] Error selecting 30d time range:", e);
+            return Promise.resolve(false);
+        }
+    }
+
     function autoSetRowsPerPage() {
         try {
             console.log('[Usage Counter] Attempting to set rows per page to', TARGET_ROWS_PER_PAGE_VALUE, 'using <select> logic.');
@@ -414,7 +488,7 @@
     }
 
     function performCount(isPageNavigation = false) {
-        console.log('[Usage Counter] Performing actual event count (All Models v0.16).');
+        console.log('[Usage Counter] Performing actual event count (All Models v0.17).');
         // Initialize an object to store counts for each model
         let modelCounts = {};
 
@@ -701,10 +775,60 @@
                 return;
             }
             
-            if (!rowsPerPageSetAttempted) {
+            // First set the time range to 30d if not attempted yet
+            if (!timeRangeSetAttempted) {
+                select30DayTimeRange().then(timeRangeSuccess => {
+                    timeRangeSetAttempted = true;
+                    console.log("[Usage Counter] select30DayTimeRange promise resolved. Success:", timeRangeSuccess);
+                    
+                    // After setting time range, set rows per page
+                    if (!rowsPerPageSetAttempted) {
+                        // Add a slight delay to allow UI to update after time range change
+                        setTimeout(() => {
+                            autoSetRowsPerPage().then(rowsSuccess => {
+                                rowsPerPageSetAttempted = true;
+                                console.log("[Usage Counter] autoSetRowsPerPage promise resolved. Success:", rowsSuccess);
+                                
+                                // Finally perform the count after both settings are applied
+                                setTimeout(() => { 
+                                    try { 
+                                        performCount(); 
+                                    } catch(e) { 
+                                        console.error("Error in performCount after settings:", e); 
+                                        createOrUpdateDisplay({ "ERROR": { successful: -1, errored: -1 } });
+                                    }
+                                }, rowsSuccess ? 500 : 0);
+                            }).catch(err => {
+                                console.error("[Usage Counter] Error in autoSetRowsPerPage promise:", err);
+                                rowsPerPageSetAttempted = true;
+                                performCount();
+                            });
+                        }, 1000);
+                    } else {
+                        // If rows already set, just perform count
+                        setTimeout(() => performCount(), 500);
+                    }
+                }).catch(err => {
+                    console.error("[Usage Counter] Error in select30DayTimeRange promise:", err);
+                    timeRangeSetAttempted = true;
+                    
+                    // Continue with rows per page setting even if time range fails
+                    if (!rowsPerPageSetAttempted) {
+                        autoSetRowsPerPage().then(success => {
+                            rowsPerPageSetAttempted = true;
+                            setTimeout(() => performCount(), success ? 500 : 0);
+                        }).catch(() => {
+                            rowsPerPageSetAttempted = true;
+                            performCount();
+                        });
+                    } else {
+                        performCount();
+                    }
+                });
+            } else if (!rowsPerPageSetAttempted) {
+                // If time range already set but rows not yet set
                 autoSetRowsPerPage().then(success => {
                     rowsPerPageSetAttempted = true;
-                    console.log("[Usage Counter] autoSetRowsPerPage promise resolved. Success:", success);
                     setTimeout(() => { 
                         try { 
                             performCount(); 
@@ -724,6 +848,7 @@
                     }
                 });
             } else {
+                // Both settings already attempted, just perform count
                 try { 
                     performCount(); 
                 } catch(e) { 
@@ -763,5 +888,5 @@
         console.error("[Usage Counter] CRITICAL ERROR setting up initial timers:", e);
     }
 
-    console.log('[Usage Counter] Script loaded and initial timers set (v0.16 - All Models with Single Pagination).');
+    console.log('[Usage Counter] Script loaded and initial timers set (v0.17 - All Models with 30d Selection).');
 })();
